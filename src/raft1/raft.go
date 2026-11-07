@@ -9,7 +9,6 @@ package raft
 
 import (
 	//	"bytes"
-	"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -169,8 +168,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else {
 		reply.IsVoted = false
 	}
-	log.Printf("[%d] RV dari %d (term %d) -> granted=%v, termku=%d",
-		rf.me, args.ID, args.Term, reply.IsVoted, rf.Term)
 	reply.Term = rf.Term
 }
 
@@ -241,7 +238,7 @@ func (rf *Raft) ticker() {
 			rf.startElection()
 		}
 		// pause for a random amount of time between 50 and 350
-		// milliseconds.
+		// milliseconds.timeout
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
@@ -301,7 +298,6 @@ func (rf *Raft) startElection() {
 	votes := 1
 
 	rf.mu.Unlock()
-	log.Printf("[%d] mulai election, term=%d", rf.me, currTerm)
 
 	for idx := range rf.peers {
 		if idx == rf.me {
@@ -311,7 +307,6 @@ func (rf *Raft) startElection() {
 		go func(peer int) {
 			reply := new(RequestVoteReply)
 			if ok := rf.sendRequestVote(peer, args, reply); !ok {
-				log.Printf("[%d] RPC ke %d GAGAL", rf.me, peer)
 
 				return
 			}
@@ -334,7 +329,6 @@ func (rf *Raft) startElection() {
 				votes++
 				if votes > len(rf.peers)/2 {
 					rf.Role = RoleLeader
-					log.Printf("[%d] JADI LEADER, term=%d", rf.me, rf.Term)
 
 					go rf.startHeartBeatLoop(rf.Term)
 				}
