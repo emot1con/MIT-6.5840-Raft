@@ -42,11 +42,18 @@ type Raft struct {
 	// Your data here (3A, 3B, 3C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	Role      NodeRole
-	Log       []LogEntry
-	Term      int
-	VotedFor  int
-	LastHeard time.Time
+	role      NodeRole
+	log       []*LogEntry
+	term      int
+	votedFor  int
+	lastHeard time.Time
+
+	//3B
+	commitIndex int
+	lastApplied int
+	nextIndex   []int
+	matchIndex  []int
+	applyCh     chan raftapi.ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -59,8 +66,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (3A).
 
-	term = rf.Term
-	isleader = rf.Role == RoleLeader
+	term = rf.term
+	isleader = rf.role == RoleLeader
 	return term, isleader
 }
 
@@ -142,33 +149,33 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if args.Term < rf.Term {
+	if args.Term < rf.term {
 		reply.IsVoted = false
-		reply.Term = rf.Term
+		reply.Term = rf.term
 		return
 	}
 
-	if args.Term > rf.Term {
-		rf.Term = args.Term
-		rf.VotedFor = -1
-		rf.Role = RoleFollower
+	if args.Term > rf.term {
+		rf.term = args.Term
+		rf.votedFor = -1
+		rf.role = RoleFollower
 	}
 
-	lastIndex := len(rf.Log) - 1
-	lastTerm := rf.Log[len(rf.Log)-1]
+	lastIndex := len(rf.log) - 1
+	lastTerm := rf.log[len(rf.log)-1]
 
-	isVoteCandidateValid := rf.VotedFor == -1 || rf.VotedFor == args.ID
+	isVoteCandidateValid := rf.votedFor == -1 || rf.votedFor == args.ID
 	logCandidateIsNewer := (args.LastLogTerm == lastTerm.Term && args.LastLogIndex >= lastIndex) ||
 		args.LastLogTerm > lastTerm.Term
 
 	if isVoteCandidateValid && logCandidateIsNewer {
-		rf.VotedFor = args.ID
-		rf.LastHeard = time.Now()
+		rf.votedFor = args.ID
+		rf.lastHeard = time.Now()
 		reply.IsVoted = true
 	} else {
 		reply.IsVoted = false
 	}
-	reply.Term = rf.Term
+	reply.Term = rf.term
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -231,7 +238,7 @@ func (rf *Raft) ticker() {
 		// Check if a leader election should be started.
 		rf.mu.Lock()
 		timeout := time.Duration(500+rand.Int63()%500) * time.Millisecond
-		startElection := rf.Role != RoleLeader && time.Since(rf.LastHeard) > time.Duration(timeout)
+		startElection := rf.role != RoleLeader && time.Since(rf.lastHeard) > time.Duration(timeout)
 		rf.mu.Unlock()
 
 		if startElection {
@@ -261,18 +268,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
-	rf.Role = RoleFollower
-	rf.Log = []LogEntry{{
+	rf.role = RoleFollower
+	rf.log = []*LogEntry{{
 		Command: nil,
 		Term:    0,
 	}}
-	rf.Term = 0
-	rf.VotedFor = -1
-	rf.LastHeard = time.Now()
+	rf.term = 0
+	rf.votedFor = -1
+	rf.lastHeard = time.Now()
+
+	// 3B
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.applyCh = applyCh
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
@@ -283,18 +296,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
 
-	rf.Role = RoleCandidate
-	rf.Term++
-	rf.VotedFor = rf.me
-	rf.LastHeard = time.Now()
+	rf.role = RoleCandidate
+	rf.term++
+	rf.votedFor = rf.me
+	rf.lastHeard = time.Now()
 
 	args := new(RequestVoteArgs)
 
 	args.ID = rf.me
-	args.Term = rf.Term
-	args.LastLogIndex = len(rf.Log) - 1
-	args.LastLogTerm = rf.Log[len(rf.Log)-1].Term
-	currTerm := rf.Term
+	args.Term = rf.term
+	args.LastLogIndex = len(rf.log) - 1
+	args.LastLogTerm = rf.log[len(rf.log)-1].Term
+	currTerm := rf.term
 	votes := 1
 
 	rf.mu.Unlock()
@@ -314,23 +327,23 @@ func (rf *Raft) startElection() {
 			rf.mu.Lock()
 			defer rf.mu.Unlock()
 
-			if reply.Term > rf.Term {
-				rf.Term = reply.Term
-				rf.VotedFor = -1
-				rf.Role = RoleFollower
+			if reply.Term > rf.term {
+				rf.term = reply.Term
+				rf.votedFor = -1
+				rf.role = RoleFollower
 				return
 			}
 
-			if rf.Role != RoleCandidate || rf.Term != currTerm {
+			if rf.role != RoleCandidate || rf.term != currTerm {
 				return
 			}
 
 			if reply.IsVoted {
 				votes++
 				if votes > len(rf.peers)/2 {
-					rf.Role = RoleLeader
+					rf.role = RoleLeader
 
-					go rf.startHeartBeatLoop(rf.Term)
+					go rf.startHeartBeatLoop(rf.term)
 				}
 			}
 		}(idx)
@@ -340,6 +353,12 @@ func (rf *Raft) startElection() {
 type AppendEntriesArgs struct {
 	ID   int
 	Term int
+
+	// 3B
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
@@ -350,21 +369,21 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term < rf.Term {
-		reply.Term = rf.Term
+	if args.Term < rf.term {
+		reply.Term = rf.term
 		reply.Success = false
 		return
 	}
 
-	if args.Term > rf.Term {
-		rf.Term = args.Term
-		rf.VotedFor = -1
+	if args.Term > rf.term {
+		rf.term = args.Term
+		rf.votedFor = -1
 	}
 
-	rf.Role = RoleFollower
-	rf.LastHeard = time.Now()
+	rf.role = RoleFollower
+	rf.lastHeard = time.Now()
 
-	reply.Term = rf.Term
+	reply.Term = rf.term
 	reply.Success = true
 }
 
@@ -377,14 +396,14 @@ func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 	for {
 		rf.mu.Lock()
 
-		if rf.Role != RoleLeader || rf.Term != leaderTerm {
+		if rf.role != RoleLeader || rf.term != leaderTerm {
 			rf.mu.Unlock()
 			return
 		}
 
 		args := new(AppendEntriesArgs)
 		args.ID = rf.me
-		args.Term = rf.Term
+		args.Term = rf.term
 
 		rf.mu.Unlock()
 
@@ -401,10 +420,10 @@ func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
 
-				if reply.Term > rf.Term {
-					rf.Role = RoleFollower
-					rf.Term = reply.Term
-					rf.VotedFor = -1
+				if reply.Term > rf.term {
+					rf.role = RoleFollower
+					rf.term = reply.Term
+					rf.votedFor = -1
 				}
 			}(idx)
 		}
@@ -412,4 +431,3 @@ func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 		time.Sleep(120 * time.Millisecond)
 	}
 }
-
