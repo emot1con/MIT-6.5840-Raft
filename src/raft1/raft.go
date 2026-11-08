@@ -236,7 +236,7 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
-		rf.mu.Lock()s
+		rf.mu.Lock()
 		timeout := time.Duration(500+rand.Int63()%500) * time.Millisecond
 		startElection := rf.role != RoleLeader && time.Since(rf.lastHeard) > time.Duration(timeout)
 		rf.mu.Unlock()
