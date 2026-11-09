@@ -43,7 +43,7 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	role      NodeRole
-	log       []*LogEntry
+	log       []LogEntry
 	term      int
 	votedFor  int
 	lastHeard time.Time
@@ -227,6 +227,21 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	term = rf.term
+	if rf.role != RoleLeader {
+		isLeader = false
+		return index, term, isLeader
+	}
+
+	log := LogEntry{}
+	log.Command = command
+	log.Term = rf.term
+
+	rf.log = append(rf.log, log)
+	index = len(rf.log) - 1
 
 	return index, term, isLeader
 }
@@ -269,7 +284,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.role = RoleFollower
-	rf.log = []*LogEntry{{
+	rf.log = []LogEntry{{
 		Command: nil,
 		Term:    0,
 	}}
@@ -384,6 +399,38 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.lastHeard = time.Now()
 
 	reply.Term = rf.term
+
+	// 3B
+	if args.PrevLogIndex >= len(rf.log) {
+		reply.Success = false
+		return
+	}
+
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		return
+	}
+
+	for i := 0; i < len(args.Entries); i++ {
+		position := args.PrevLogIndex + 1 + i
+		entry := args.Entries[i]
+
+		if position < len(rf.log){
+			if rf.log[position].Term != entry.Term{
+				rf.log = rf.log[:position]
+				rf.log = append(rf.log, entry)
+			}
+		}else{
+			rf.log = append(rf.log, entry)
+		}
+
+	}
+
+	lastIdx := args.PrevLogIndex + len(args.Entries)
+	if args.LeaderCommit > rf.commitIndex{
+		rf.commitIndex = min(args.LeaderCommit, lastIdx)
+	}
+
 	reply.Success = true
 }
 
