@@ -335,7 +335,6 @@ func (rf *Raft) startElection() {
 		go func(peer int) {
 			reply := new(RequestVoteReply)
 			if ok := rf.sendRequestVote(peer, args, reply); !ok {
-
 				return
 			}
 
@@ -357,6 +356,11 @@ func (rf *Raft) startElection() {
 				votes++
 				if votes > len(rf.peers)/2 {
 					rf.role = RoleLeader
+
+					for i := range len(rf.peers){	
+						rf.nextIndex[i] = len(rf.log)
+						rf.matchIndex[i] = 0
+					}
 
 					go rf.startHeartBeatLoop(rf.term)
 				}
@@ -415,19 +419,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		position := args.PrevLogIndex + 1 + i
 		entry := args.Entries[i]
 
-		if position < len(rf.log){
-			if rf.log[position].Term != entry.Term{
+		if position < len(rf.log) {
+			if rf.log[position].Term != entry.Term {
 				rf.log = rf.log[:position]
 				rf.log = append(rf.log, entry)
 			}
-		}else{
+		} else {
 			rf.log = append(rf.log, entry)
 		}
 
 	}
 
 	lastIdx := args.PrevLogIndex + len(args.Entries)
-	if args.LeaderCommit > rf.commitIndex{
+	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, lastIdx)
 	}
 
@@ -442,24 +446,35 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 	for {
 		rf.mu.Lock()
-
 		if rf.role != RoleLeader || rf.term != leaderTerm {
 			rf.mu.Unlock()
 			return
 		}
 
-		args := new(AppendEntriesArgs)
-		args.ID = rf.me
-		args.Term = rf.term
+		argsListIdx := make([]*AppendEntriesArgs, len(rf.peers))
+		for idx := range rf.peers {
+			if idx == rf.me {
+				continue
+			}
 
+			args := new(AppendEntriesArgs)
+			args.ID = rf.me
+			args.Term = rf.term
+			next := rf.nextIndex[idx]
+			args.PrevLogIndex = next - 1
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+			args.Entries = append([]LogEntry{}, rf.log[next:]...)
+			args.LeaderCommit = rf.commitIndex
+
+			argsListIdx[idx] = args
+		}
 		rf.mu.Unlock()
 
 		for idx := range rf.peers {
 			if idx == rf.me {
 				continue
 			}
-
-			go func(peerIdx int) {
+			go func(peerIdx int, args *AppendEntriesArgs) {
 				reply := new(AppendEntriesReply)
 				if ok := rf.sendAppendEntries(peerIdx, args, reply); !ok {
 					return
@@ -472,9 +487,8 @@ func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 					rf.term = reply.Term
 					rf.votedFor = -1
 				}
-			}(idx)
+			}(idx, argsListIdx[idx])
 		}
-
 		time.Sleep(120 * time.Millisecond)
 	}
 }
