@@ -357,7 +357,7 @@ func (rf *Raft) startElection() {
 				if votes > len(rf.peers)/2 {
 					rf.role = RoleLeader
 
-					for i := range len(rf.peers){	
+					for i := range len(rf.peers) {
 						rf.nextIndex[i] = len(rf.log)
 						rf.matchIndex[i] = 0
 					}
@@ -486,6 +486,43 @@ func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 					rf.role = RoleFollower
 					rf.term = reply.Term
 					rf.votedFor = -1
+					return
+				}
+
+				if rf.role != RoleLeader || rf.term != leaderTerm {
+					return
+				}
+
+				if reply.Success {
+					newIdx := args.PrevLogIndex + len(args.Entries)
+					if newIdx > rf.matchIndex[peerIdx] {
+						rf.matchIndex[peerIdx] = newIdx
+						rf.nextIndex[peerIdx] = newIdx + 1
+					}
+
+					for i := len(rf.log) - 1; i >= rf.commitIndex+1; i-- {
+						if rf.log[i].Term == rf.term {
+							count := 1
+							for pId := range rf.peers {
+								if pId == rf.me {
+									continue
+								}
+
+								if rf.matchIndex[pId] >= i {
+									count++
+								}
+							}
+							if count > len(rf.peers)/2 {
+								rf.commitIndex = i
+								break
+							}
+
+						}
+					}
+				} else {
+					if rf.nextIndex[peerIdx] > 1 {
+						rf.nextIndex[peerIdx]--
+					}
 				}
 			}(idx, argsListIdx[idx])
 		}
