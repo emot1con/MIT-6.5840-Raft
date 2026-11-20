@@ -305,6 +305,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
+	go rf.applier()
+
 	return rf
 }
 
@@ -527,5 +529,30 @@ func (rf *Raft) startHeartBeatLoop(leaderTerm int) {
 			}(idx, argsListIdx[idx])
 		}
 		time.Sleep(120 * time.Millisecond)
+	}
+}
+
+func (rf *Raft) applier(){
+	for{
+		rf.mu.Lock()
+
+		msgs := []raftapi.ApplyMsg{}
+		for rf.lastApplied < rf.commitIndex{
+			rf.lastApplied++
+
+			msg := raftapi.ApplyMsg{
+				CommandValid: true,
+				Command: rf.log[rf.lastApplied].Command,
+				CommandIndex: rf.lastApplied,	
+			}
+			msgs = append(msgs, msg)
+		}
+		rf.mu.Unlock()
+
+		for _, v := range msgs{
+			rf.applyCh <- v
+		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
